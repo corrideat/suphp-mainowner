@@ -66,6 +66,12 @@ int suPHP::Application::run(CommandLine& cmdline, Environment& env) {
         std::string scriptFilename;
         UserInfo targetUser;
         GroupInfo targetGroup;
+#ifdef COMMON_POOL
+        UserInfo commonUser;
+        GroupInfo commonGroup;
+#endif // COMMON_POOL
+        std::string documentRoot; /* To use in chroot fix */
+        std::string serverRoot; /* To use in chroot fix */
 
         // If caller is super-user, print info message and exit
         if (api.getRealProcessUser().isSuperUser()) {
@@ -73,6 +79,14 @@ int suPHP::Application::run(CommandLine& cmdline, Environment& env) {
             return 0;
         }
         config.readFromFile(cfgFile);
+	
+       try {
+            documentRoot = env.getVar("DOCUMENT_ROOT");
+       } catch (KeyNotFoundException& e) {
+           logger.logError("Environment variable DOCUMENT_ROOT not set");
+           this->printAboutMessage();
+           return 0;
+       }
 
         // Check permissions (real uid, effective uid)
         this->checkProcessPermissions(config);
@@ -95,10 +109,20 @@ int suPHP::Application::run(CommandLine& cmdline, Environment& env) {
         this->checkScriptFileStage1(scriptFilename, config, env);
 
         // Find out target user
-        this->checkProcessPermissions(scriptFilename, config, env, targetUser, targetGroup);
+        this->checkProcessPermissions(scriptFilename, config, env, targetUser, targetGroup
+#ifdef COMMON_POOL
+		, commonUser,
+		commonGroup
+#endif // COMMON_POOL
+	);
 
         // Now do checks that might require user info
-        this->checkScriptFileStage2(scriptFilename, config, env, targetUser, targetGroup);
+        this->checkScriptFileStage2(scriptFilename, config, env, targetUser, targetGroup
+#ifdef COMMON_POOL
+		, commonUser
+//		commonGroup
+#endif // COMMON_POOL
+);
 
         // Root privileges are needed for chroot()
         // so do this before changing process permissions
@@ -106,7 +130,18 @@ int suPHP::Application::run(CommandLine& cmdline, Environment& env) {
             PathMatcher pathMatcher = PathMatcher(targetUser, targetGroup);
             std::string chrootPath = pathMatcher.resolveVariables(config.getChrootPath());
             api.chroot(chrootPath);
+		
+            /* Correct arguments to the chroot value ... */
+
+            documentRoot.erase(0, chrootPath.length());
+            scriptFilename.erase(0, chrootPath.length());
+            serverRoot.erase(0, chrootPath.length());
+
+            env.setVar("DOCUMENT_ROOT", documentRoot);
+            env.setVar("SCRIPT_FILENAME", scriptFilename);
+            env.setVar("SERVER_ROOT", scriptFilename);
         }
+	
 
         this->changeProcessPermissions(config, targetUser, targetGroup);
 
@@ -256,15 +291,6 @@ void suPHP::Application::checkScriptFileStage1(
         logger.logWarning(error);
         throw SoftException(error, __FILE__, __LINE__);
     }
-
-    // Check UID/GID of symlink is matching target
-    if (scriptFile.getUser() != realScriptFile.getUser()
-        || scriptFile.getGroup() != realScriptFile.getGroup()) {
-        std::string error = "UID or GID of symlink \"" + scriptFile.getPath()
-            + "\" is not matching its target";
-        logger.logWarning(error);
-        throw SoftException(error, __FILE__, __LINE__);
-    }
 }
 
 void suPHP::Application::checkScriptFileStage2(
@@ -272,7 +298,12 @@ void suPHP::Application::checkScriptFileStage2(
     const Configuration& config,
     const Environment& environment,
     const UserInfo& targetUser,
-    const GroupInfo& targetGroup) const
+    const GroupInfo& targetGroup
+#ifdef COMMON_POOL
+    , const UserInfo& commonUser
+//    const GroupInfo& commonGroup
+#endif // COMMON_POOL
+) const
     throw (SystemException, SoftException) {
     Logger& logger = API_Helper::getSystemAPI().getSystemLogger();
     File scriptFile = File(scriptFilename);
@@ -281,7 +312,24 @@ void suPHP::Application::checkScriptFileStage2(
     // Get full path to script file
     File realScriptFile = File(scriptFile.getRealPath());
 
-    // Check wheter script is in one of the defined docroots
+    /* Code borrowed from checkScriptFileStage2, since commonUser may be the owner of the directory */
+    // Check UID/GID of symlink is matching target
+    if (scriptFile.getUser() != realScriptFile.getUser()
+        || scriptFile.getGroup() != realScriptFile.getGroup()) {
+	/* Check if it hasn't the others write bit and [ if the owner isn't root OR commonUser ] and [if it the gowner is root OR it isn't group-writeable ] */
+	if (!( realScriptFile.hasOthersWriteBit() && (realScriptFile.getUser().isSuperUser()
+#ifdef COMMON_POOL
+		|| realScriptFile.getUser() == commonUser
+#endif // COMMON_POOL
+		) && (realScriptFile.hasGroupWriteBit() || realScriptFile.getGroup()==0) )) {
+		std::string error = "UID or GID of symlink \"" + scriptFile.getPath()
+		    + "\" is not matching its target";
+		logger.logWarning(error);
+		throw SoftException(error, __FILE__, __LINE__);
+	}
+    }
+
+    // Check whether script is in one of the defined docroots
     bool file_in_docroot = false;
     const std::vector<std::string> docroots = config.getDocroots();
     for (std::vector<std::string>::const_iterator i = docroots.begin(); i != docroots.end(); i++) {
@@ -314,8 +362,16 @@ void suPHP::Application::checkScriptFileStage2(
     }
 
     // Check directory ownership and permissions
-    checkParentDirectories(realScriptFile, targetUser, config);
-    checkParentDirectories(scriptFile, targetUser, config);
+    checkParentDirectories(realScriptFile, targetUser, config
+#ifdef COMMON_POOL
+    ,commonUser
+#endif // COMMON_POOL    
+    );
+    checkParentDirectories(scriptFile, targetUser, config
+#ifdef COMMON_POOL
+    , commonUser
+#endif // COMMON_POOL
+    );
 }
 
 void suPHP::Application::checkProcessPermissions(
@@ -323,7 +379,12 @@ void suPHP::Application::checkProcessPermissions(
     const Configuration& config,
     const Environment& environment,
     UserInfo& targetUser,
-    GroupInfo& targetGroup) const
+    GroupInfo& targetGroup
+#ifdef COMMON_POOL
+    , UserInfo& commonUser,
+    GroupInfo& commonGroup
+#endif // COMMON_POOL
+) const
     throw (SystemException, SoftException, SecurityException) {
 
     File scriptFile = File(scriptFilename);
@@ -395,7 +456,34 @@ void suPHP::Application::checkProcessPermissions(
     // Paranoid mode only
 
 #ifdef OPT_USERGROUP_PARANOID
-    if (targetUser != scriptFile.getUser()) {
+
+#ifdef COMMON_POOL
+    std::string commonUsername, commonGroupname;
+    
+    commonUsername = config.getCommonUser();
+    commonGroupname = config.getCommonGroup();
+
+    if (commonUsername[0] == '#' && commonUsername.find_first_not_of(
+            "0123456789", 1) == std::string::npos) {
+        commonUser = api.getUserInfo(Util::strToInt(commonUsername.substr(1)));
+    } else {
+        commonUser = api.getUserInfo(commonUsername);
+    }
+
+    if (commonGroupname[0] == '#' && commonGroupname.find_first_not_of(
+            "0123456789", 1) == std::string::npos) {
+        commonGroup = api.getGroupInfo(
+            Util::strToInt(commonGroupname.substr(1)));
+    } else {
+        commonGroup = api.getGroupInfo(commonGroupname);
+    }
+#endif // COMMON_POOL
+    
+    if (targetUser != scriptFile.getUser()
+#ifdef COMMON_POOL
+	&& commonUser != scriptFile.getUser()
+#endif // COMMON_POOL
+    ) {
         std::string error ="Mismatch between target UID ("
             + Util::intToStr(targetUser.getUid()) + ") and UID ("
             + Util::intToStr(scriptFile.getUser().getUid()) + ") of file \""
@@ -404,7 +492,11 @@ void suPHP::Application::checkProcessPermissions(
         throw SoftException(error, __FILE__, __LINE__);
     }
 
-    if (targetGroup != scriptFile.getGroup()) {
+    if (targetGroup != scriptFile.getGroup()
+#ifdef COMMON_POOL
+	&& commonGroup != scriptFile.getGroup()
+#endif // COMMON_POOL
+    ) {
         std::string error ="Mismatch between target GID ("
             + Util::intToStr(targetGroup.getGid()) + ") and GID ("
             + Util::intToStr(scriptFile.getGroup().getGid()) + ") of file \""
@@ -508,6 +600,8 @@ TargetMode suPHP::Application::getTargetMode(const std::string& interpreter)
         return TARGETMODE_PHP;
     else if (interpreter == "execute:!self")
         return TARGETMODE_SELFEXECUTE;
+    else if (interpreter.substr(0, 8) == "execute:")
+        return TARGETMODE_OTHER;
     else
         throw SecurityException("Unknown Interpreter: " + interpreter,
                                 __FILE__, __LINE__);
@@ -524,10 +618,13 @@ void suPHP::Application::executeScript(const std::string& scriptFilename,
         // Change working directory to script path
         API_Helper::getSystemAPI().setCwd(
             File(scriptFilename).getParentDirectory().getPath());
-        if (mode == TARGETMODE_PHP) {
-            std::string interpreterPath = interpreter.substr(4);
+        if (mode == TARGETMODE_PHP || mode == TARGETMODE_OTHER) {
+            std::string interpreterPath = interpreter.substr((mode==TARGETMODE_OTHER)?8:4);
             CommandLine cline;
-            cline.putArgument(interpreterPath);
+            if (mode==TARGETMODE_OTHER) {
+		    cline.putArgument(interpreterPath);
+	    }
+            cline.putArgument(scriptFilename);
             API_Helper::getSystemAPI().execute(interpreterPath, cline, env);
         } else if (mode == TARGETMODE_SELFEXECUTE) {
             CommandLine cline;
@@ -543,14 +640,22 @@ void suPHP::Application::executeScript(const std::string& scriptFilename,
 
 void suPHP::Application::checkParentDirectories(const File& file,
                                                const UserInfo& owner,
-                                               const Configuration& config) const throw (SoftException) {
+                                               const Configuration& config
+#ifdef COMMON_POOL
+						, const UserInfo& commonUser
+#endif // COMMON_POOL
+) const throw (SoftException) {
     File directory = file;
     Logger& logger = API_Helper::getSystemAPI().getSystemLogger();
     do {
         directory = directory.getParentDirectory();
 
         UserInfo directoryOwner = directory.getUser();
-        if (directoryOwner != owner && !directoryOwner.isSuperUser()) {
+        if (!config.getAllowDirectoryOwnedByOther() && directoryOwner != owner && !directoryOwner.isSuperUser()
+#ifdef COMMON_POOL
+		&& directoryOwner != commonUser
+#endif // COMMON_POOL
+		) {
             std::string error = "Directory " + directory.getPath()
                 + " is not owned by " + owner.getUsername();
             logger.logWarning(error);

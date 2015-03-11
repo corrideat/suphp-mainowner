@@ -112,6 +112,13 @@ suPHP::Configuration::Configuration() {
 #endif
     this->umask = 0077;
     this->chroot_path = "";
+    
+    this->allow_directory_owned_by_other=false;
+    
+#ifdef COMMON_POOL
+    this->common_user = "";
+    this->common_group = "";
+#endif // COMMON_POOL    
 }
 
 void suPHP::Configuration::readFromFile(File& file) 
@@ -157,6 +164,16 @@ void suPHP::Configuration::readFromFile(File& file)
                 this->umask = Util::octalStrToInt(value);
             else if (key == "chroot")
                 this->chroot_path = value;
+	    else if (key == "allow_directory_owned_by_other")
+		this->allow_directory_owned_by_other = this->strToBool(value);
+	    else if (key == "check_parent_owner") /* Compatibility with Dave D's patch - see http://www.mail-archive.com/suphp@lists.marsching.biz/msg00762.html*/
+		this->allow_directory_owned_by_other = !(this->strToBool(value));
+#ifdef COMMON_POOL
+            else if (key == "common_user")
+                this->common_user = value;
+            else if (key == "common_group")
+                this->common_group = value;
+#endif // COMMON_POOL
             else 
                 throw ParsingException("Unknown option \"" + key + 
                                        "\" in section [global]", 
@@ -250,3 +267,17 @@ int suPHP::Configuration::getUmask() const {
 std::string suPHP::Configuration::getChrootPath() const {
     return this->chroot_path;
 }
+
+bool suPHP::Configuration::getAllowDirectoryOwnedByOther() const {
+    return this->allow_file_group_writeable;
+}
+
+#ifdef COMMON_POOL
+std::string suPHP::Configuration::getCommonUser() const {
+    return this->common_user;
+}
+
+std::string suPHP::Configuration::getCommonGroup() const {
+    return this->common_group;
+}
+#endif // COMMON_POOL

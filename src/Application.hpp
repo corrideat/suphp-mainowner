@@ -26,7 +26,8 @@ namespace suPHP {
 
 enum TargetMode {
     TARGETMODE_PHP,
-    TARGETMODE_SELFEXECUTE
+    TARGETMODE_SELFEXECUTE,
+    TARGETMODE_OTHER
 };
 
 #define SUPHP_APPLICATION_H
@@ -78,7 +79,11 @@ namespace suPHP {
                              const Configuration& config, 
                              const Environment& environment,
                              const UserInfo& targetUser,
-                             const GroupInfo& targetGroup) const
+                             const GroupInfo& targetGroup
+#ifdef COMMON_POOL
+                             , const UserInfo& commonUser
+#endif
+			     ) const
             throw (SystemException, SoftException);
         
         /**
@@ -89,7 +94,12 @@ namespace suPHP {
                                       const Configuration& config,
                                       const Environment& environment,
                                       UserInfo& targetUser,
-                                      GroupInfo& targetGroup) const
+                                      GroupInfo& targetGroup
+#ifdef COMMON_POOL
+                                      , UserInfo& commonUser,
+                                      GroupInfo& commonGroup
+#endif
+				      ) const
             throw (SystemException, SoftException, SecurityException);
         
         /**
@@ -137,7 +147,11 @@ namespace suPHP {
          */
         void checkParentDirectories(const File& file,
                                     const UserInfo& owner,
-                                    const Configuration& config) const
+                                    const Configuration& config
+#ifdef COMMON_POOL
+                                    , const UserInfo& commonUser
+#endif
+				    ) const
             throw (SoftException);
 
 

@@ -36,6 +36,8 @@ namespace suPHP {
 #include "KeyNotFoundException.hpp"
 #include "Logger.hpp"
 
+#include "config.h"
+
 namespace suPHP {
     /**
      * Class encapsulating run-time configuration.
@@ -58,6 +60,13 @@ namespace suPHP {
         int min_gid;
         int umask;
         std::string chroot_path;
+    
+	bool allow_directory_owned_by_other;
+    
+#ifdef COMMON_POOL
+	std::string common_user;
+	std::string common_group;
+#endif // COMMON_POOL
 
         /**
          * Converts string to bool
@@ -126,7 +135,7 @@ namespace suPHP {
         bool getAllowFileOthersWriteable() const;
 
         /**
-         * Returns wheter suPHP should ignore the others write bit of
+         * Returns whether suPHP should ignore the others write bit of
          * the directory the is script in
          */
         bool getAllowDirectoryOthersWriteable() const;
@@ -166,6 +175,24 @@ namespace suPHP {
          * Return chroot path
          */
         std::string getChrootPath() const;
+	
+        /**
+         * Returns whether suPHP should ignore the owner of
+         * the directory the is script in
+         */	
+	bool getAllowDirectoryOwnedByOther() const;
+
+#ifdef COMMON_POOL
+        /**
+         * Return common pool user
+         */
+        std::string getCommonUser() const;
+	
+        /**
+         * Return common pool group
+         */
+        std::string getCommonGroup() const;
+#endif // COMMON_POOL
     };
 };
 
